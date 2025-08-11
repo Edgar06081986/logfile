@@ -10,6 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from collections import defaultdict
+import re
 
 try:
     from tabulate import tabulate
@@ -112,6 +113,110 @@ class LogProcessor:
         report_data.sort(key=lambda x: x['total'], reverse=True)
         
         return report_data
+    
+    def generate_user_agent_report(self) -> List[Dict[str, Any]]:
+        """
+        Генерирует отчет по User-Agent браузеров.
+        
+        Returns:
+            Список словарей с данными отчета
+        """
+        user_agent_stats = defaultdict(int)
+        total_requests = 0
+        
+        for log_entry in self.logs:
+            user_agent = log_entry.get('http_user_agent', '')
+            if user_agent:
+                browser = self._extract_browser_from_user_agent(user_agent)
+                user_agent_stats[browser] += 1
+                total_requests += 1
+        
+        # Формирование отчета
+        report_data = []
+        for browser, count in user_agent_stats.items():
+            percentage = (count / total_requests * 100) if total_requests > 0 else 0
+            
+            report_data.append({
+                'browser': browser,
+                'requests': count,
+                'percentage': round(percentage, 2)
+            })
+        
+        # Сортировка по количеству запросов (по убыванию)
+        report_data.sort(key=lambda x: x['requests'], reverse=True)
+        
+        return report_data
+    
+    def generate_status_report(self) -> List[Dict[str, Any]]:
+        """
+        Генерирует отчет по HTTP статус кодам.
+        
+        Returns:
+            Список словарей с данными отчета
+        """
+        status_stats = defaultdict(int)
+        total_requests = 0
+        
+        for log_entry in self.logs:
+            status = log_entry.get('status')
+            if status is not None:
+                status_stats[str(status)] += 1
+                total_requests += 1
+        
+        # Формирование отчета
+        report_data = []
+        for status, count in status_stats.items():
+            percentage = (count / total_requests * 100) if total_requests > 0 else 0
+            
+            report_data.append({
+                'status_code': status,
+                'requests': count,
+                'percentage': round(percentage, 2)
+            })
+        
+        # Сортировка по количеству запросов (по убыванию)
+        report_data.sort(key=lambda x: x['requests'], reverse=True)
+        
+        return report_data
+    
+    def _extract_browser_from_user_agent(self, user_agent: str) -> str:
+        """
+        Извлекает название браузера из User-Agent строки.
+        
+        Args:
+            user_agent: Строка User-Agent
+            
+        Returns:
+            Название браузера
+        """
+        if not user_agent or user_agent == '...':
+            return 'Unknown'
+        
+        user_agent_lower = user_agent.lower()
+        
+        # Порядок проверки важен! Chrome должен быть после Edge
+        if 'edg/' in user_agent_lower:
+            return 'Edge'
+        elif 'firefox' in user_agent_lower:
+            return 'Firefox'
+        elif 'chrome' in user_agent_lower:
+            return 'Chrome'
+        elif 'safari' in user_agent_lower and 'chrome' not in user_agent_lower:
+            return 'Safari'
+        elif 'opera' in user_agent_lower or 'opr/' in user_agent_lower:
+            return 'Opera'
+        elif 'trident' in user_agent_lower or 'msie' in user_agent_lower:
+            return 'Internet Explorer'
+        elif 'curl' in user_agent_lower:
+            return 'curl'
+        elif 'wget' in user_agent_lower:
+            return 'wget'
+        elif 'python' in user_agent_lower:
+            return 'Python'
+        elif 'bot' in user_agent_lower or 'crawler' in user_agent_lower:
+            return 'Bot/Crawler'
+        else:
+            return 'Other'
 
 
 class ReportGenerator:
@@ -119,21 +224,80 @@ class ReportGenerator:
     
     def __init__(self, processor: LogProcessor):
         self.processor = processor
+        # Реестр доступных отчетов для легкого расширения
+        self._report_registry = {
+            'average': {
+                'method': self.processor.generate_average_report,
+                'headers': ['handler', 'total', 'avg_response_time'],
+                'description': 'Статистика по эндпоинтам с количеством запросов и средним временем ответа'
+            },
+            'user_agent': {
+                'method': self.processor.generate_user_agent_report,
+                'headers': ['browser', 'requests', 'percentage'],
+                'description': 'Статистика по браузерам пользователей'
+            },
+            'status': {
+                'method': self.processor.generate_status_report,
+                'headers': ['status_code', 'requests', 'percentage'],
+                'description': 'Статистика по HTTP статус кодам'
+            }
+        }
+    
+    def get_available_reports(self) -> Dict[str, str]:
+        """
+        Возвращает список доступных отчетов с их описаниями.
+        
+        Returns:
+            Словарь {название_отчета: описание}
+        """
+        return {name: info['description'] for name, info in self._report_registry.items()}
+    
+    def get_report_headers(self, report_type: str) -> List[str]:
+        """
+        Возвращает заголовки для указанного типа отчета.
+        
+        Args:
+            report_type: Тип отчета
+            
+        Returns:
+            Список заголовков
+        """
+        if report_type not in self._report_registry:
+            raise ValueError(f"Неподдерживаемый тип отчета: {report_type}")
+        
+        return self._report_registry[report_type]['headers']
     
     def generate_report(self, report_type: str) -> List[Dict[str, Any]]:
         """
         Генерирует отчет указанного типа.
         
         Args:
-            report_type: Тип отчета ('average', и т.д.)
+            report_type: Тип отчета
         
         Returns:
             Данные отчета
         """
-        if report_type == 'average':
-            return self.processor.generate_average_report()
-        else:
+        if report_type not in self._report_registry:
             raise ValueError(f"Неподдерживаемый тип отчета: {report_type}")
+        
+        report_method = self._report_registry[report_type]['method']
+        return report_method()
+    
+    def add_report_type(self, name: str, method, headers: List[str], description: str):
+        """
+        Добавляет новый тип отчета в реестр.
+        
+        Args:
+            name: Название отчета
+            method: Метод для генерации отчета
+            headers: Заголовки таблицы
+            description: Описание отчета
+        """
+        self._report_registry[name] = {
+            'method': method,
+            'headers': headers,
+            'description': description
+        }
 
 
 def format_table(data: List[Dict[str, Any]], headers: List[str]) -> str:
@@ -190,14 +354,24 @@ def format_table(data: List[Dict[str, Any]], headers: List[str]) -> str:
 
 def main():
     """Основная функция программы."""
+    # Создаем временный генератор для получения списка отчетов
+    temp_processor = LogProcessor()
+    temp_generator = ReportGenerator(temp_processor)
+    available_reports = list(temp_generator.get_available_reports().keys())
+    
     parser = argparse.ArgumentParser(
         description='Анализ лог-файлов и генерация отчетов',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Примеры использования:
   python main.py --file example1.log --report average
-  python main.py --file example1.log example2.log --report average
-  python main.py --file example1.log --report average --date 2025-06-22
+  python main.py --file example1.log example2.log --report user_agent
+  python main.py --file example1.log --report status --date 2025-06-22
+  
+Доступные отчеты:
+  average    - Статистика по эндпоинтам
+  user_agent - Статистика по браузерам пользователей
+  status     - Статистика по HTTP статус кодам
         """
     )
     
@@ -211,7 +385,7 @@ def main():
     parser.add_argument(
         '--report',
         required=True,
-        choices=['average'],
+        choices=available_reports,
         help='Тип отчета для генерации'
     )
     
@@ -242,9 +416,8 @@ def main():
             return
         
         # Вывод отчета
-        if args.report == 'average':
-            headers = ['handler', 'total', 'avg_response_time']
-            print(format_table(report_data, headers))
+        headers = report_generator.get_report_headers(args.report)
+        print(format_table(report_data, headers))
         
     except Exception as e:
         print(f"Ошибка: {e}", file=sys.stderr)
